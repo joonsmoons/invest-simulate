@@ -2,16 +2,13 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import altair as alt
+from urllib.parse import urlencode
 
 
 ############################################
 # 1) 종합소득세 계산 함수 (누진공제 방식)
 ############################################
 def calculate_income_tax(income):
-    """
-    종합소득세율을 간단화하여 누진공제 표 기반으로 계산합니다.
-    실제 계산과 다를 수 있으므로 참고용으로만 활용하세요.
-    """
     tax_brackets = [
         (12_000_000, 0.06, 0),
         (46_000_000, 0.15, 1_080_000),
@@ -28,166 +25,220 @@ def calculate_income_tax(income):
     return 0
 
 
-############################################
-# 2) Streamlit UI
-############################################
+######################################
+# 2) Helper functions for query params
+######################################
+# st.query_params returns an object that behaves like a dictionary
+# but also supports attribute notation (e.g. st.query_params.my_key).
 
+
+def safe_get_int_param(key, default):
+    try:
+        # st.query_params[key] returns a string if it exists
+        return int(st.query_params.get(key, default))
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_get_float_param(key, default):
+    try:
+        return float(st.query_params.get(key, default))
+    except (ValueError, TypeError):
+        return default
+
+
+############################################
+# 3) Streamlit UI
+############################################
 st.title("은퇴 포트폴리오 시뮬레이터 🇰🇷")
-
 """
 이 시뮬레이터는 **개인투자자**를 위한 간단한 은퇴 자금 예측 도구입니다.
 아래 입력 값을 조정하여, 연봉(세전), 저축액, 투자수익률, 세금 등을 고려한
 장기 은퇴 계획을 시뮬레이션해 보세요.
 """
 
-# 간단 안내문
 st.info(
     "이 시뮬레이터는 **예시용**으로 작성된 것이며, 실제 세법/투자 환경과 다를 수 있습니다. "
     "금액과 세율 등은 각자의 상황에 맞게 조정하세요."
 )
 
+############################
+# 4) Load defaults from URL
+############################
+# Read from st.query_params (which are strings).
+current_age_default = safe_get_int_param("current_age", 30)
+death_age_default = safe_get_int_param("death_age", 90)
+current_savings_default = safe_get_int_param("current_savings", 500_000_000)
+annual_income_default = safe_get_int_param("annual_income_input", 100_000_000)
+income_end_age_default = safe_get_int_param("income_end_age", 45)
+other_income_default = safe_get_int_param("other_income_input", 0)
+other_income_end_age_default = safe_get_int_param("other_income_end_age", 70)
+annual_expenses_default = safe_get_int_param("annual_expenses_input", 70_000_000)
+
+expected_return_slider_def = safe_get_float_param("expected_return", 6.0)
+inflation_rate_slider_def = safe_get_float_param("inflation_rate", 2.0)
+withdrawal_rate_slider_def = safe_get_float_param("withdrawal_rate", 4.0)
+cap_gains_tax_slider_def = safe_get_float_param("capital_gains_tax_rate", 22.0)
+
+###############################
+# 5) Create the sidebar inputs
+###############################
 with st.sidebar:
     st.header("🔧 입력 매개변수")
-    st.markdown("아래 입력란을 채워주세요. 결과는 오른쪽 메인 영역에 표시됩니다.")
 
-    # 🔹 나이 설정
     current_age = st.number_input(
         "현재 나이",
         min_value=18,
         max_value=90,
-        value=30,
+        value=current_age_default,
         step=1,
-        help="현재 본인의 실제 나이를 입력하세요. (18~90세 허용)",
     )
     death_age = st.number_input(
         "기대 수명(사망 나이)",
         min_value=current_age,
         max_value=110,
-        value=90,
+        value=death_age_default,
         step=1,
-        help="얼마까지 살아갈 것으로 예상하는지 입력 (최대 110세).",
     )
-
-    # 🔹 금융 설정
     current_savings = st.number_input(
         "현재 저축액 (KRW)",
         min_value=0,
-        value=500_000_000,
+        value=current_savings_default,
         step=10_000_000,
-        help="현재 보유 중인 총 저축액(투자원금, 현금, 예적금 등 포함).",
     )
 
-    # ✅ 연봉 & 종료 나이
+    # 연봉 & 종료 나이
     col1, col2 = st.columns([2, 1])
     with col1:
         annual_income_input = st.number_input(
             "연봉 (세전, KRW)",
             min_value=0,
-            value=100_000_000,
+            value=annual_income_default,
             step=1_000_000,
-            help="연간 세전 연봉 총액. (0이면 소득 없음)",
         )
     with col2:
         income_end_age = st.number_input(
             "은퇴 나이",
             min_value=current_age,
             max_value=death_age,
-            value=45,
+            value=income_end_age_default,
             step=1,
-            help="언제까지 이 연봉을 받을지. 이 나이 이후 연봉은 0이 됨.",
         )
 
-    # ✅ 기타 수입 & 종료 나이
+    # 기타 수입 & 종료 나이
     col3, col4 = st.columns([2, 1])
     with col3:
         other_income_input = st.number_input(
             "기타 수입 (연간, KRW)",
             min_value=0,
-            value=0,
+            value=other_income_default,
             step=1_000_000,
-            help="연봉 외 임대수익, 사업소득, 배당소득 등 연간 수입.",
         )
     with col4:
         other_income_end_age = st.number_input(
             "종료 나이",
             min_value=current_age,
             max_value=death_age,
-            value=70,
+            value=other_income_end_age_default,
             step=1,
-            help="기타 수입이 몇 세까지 발생하는지 설정.",
         )
 
     annual_expenses_input = st.number_input(
         "연간 지출 (KRW)",
         min_value=0,
-        value=70_000_000,
+        value=annual_expenses_default,
         step=1_000_000,
-        help="연간 생활비. 은퇴 여부와 무관하게 기본 지출로 간주.",
     )
 
-    # 🔹 투자 & 인플레이션
+    # 투자 & 물가상승률
     st.markdown("#### 투자 및 물가상승률")
-    expected_return = (
-        st.slider(
-            "기대 연간 수익률 (%)",
-            0.0,
-            10.0,
-            6.0,
-            step=0.1,
-            help="투자 포트폴리오의 연평균 성장률(%) 가정.",
-        )
-        / 100
+    slider_val_return = st.slider(
+        "기대 연간 수익률 (%)",
+        0.0,
+        10.0,
+        expected_return_slider_def,
+        step=0.1,
     )
+    expected_return = slider_val_return / 100.0
 
-    # 여기서는 단순하게 'inflation_rate' 하나만 사용 (연봉, 기타수입, 지출 모두 동일)
-    inflation_rate = (
-        st.slider(
-            "연간 인플레이션 (%)",
-            0.0,
-            10.0,
-            2.0,
-            step=0.1,
-            help="물가상승률 가정. 지출/연봉/기타 수입에 매년 적용.",
-        )
-        / 100
+    slider_val_inflation = st.slider(
+        "연간 인플레이션 (%)",
+        0.0,
+        10.0,
+        inflation_rate_slider_def,
+        step=0.1,
     )
+    inflation_rate = slider_val_inflation / 100.0
 
-    withdrawal_rate = (
-        st.slider(
-            "은퇴 후 인출률 (%)",
-            1.0,
-            10.0,
-            4.0,
-            step=0.1,
-            help="은퇴 후 매년 포트폴리오에서 실제로 인출할 비율 (예: 4%룰).",
-        )
-        / 100
+    withdrawal_slider_val = st.slider(
+        "은퇴 후 인출률 (%)",
+        1.0,
+        10.0,
+        withdrawal_rate_slider_def,
+        step=0.1,
     )
+    withdrawal_rate = withdrawal_slider_val / 100.0
 
-    # 🔹 세금 설정 (양도소득세)
-    st.markdown("#### 양도소득세(자본이득)에 대한 설정")
-    capital_gains_tax_rate = (
-        st.slider(
-            "양도소득세율 (%)",
-            0.0,
-            30.0,
-            22.0,
-            step=0.1,
-            help="실현된 투자이익에 매기는 세율 (예: 해외주식 22% 등)",
-        )
-        / 100
+    # 세금 설정 (양도소득세)
+    st.markdown("#### 양도소득세(자본이득) 설정")
+    slider_val_cap_gains_tax = st.slider(
+        "양도소득세율 (%)",
+        0.0,
+        30.0,
+        cap_gains_tax_slider_def,
+        step=0.1,
     )
-    capital_gains_exemption = 2_500_000  # 예: 해외주식 공제 가정
+    capital_gains_tax_rate = slider_val_cap_gains_tax / 100.0
 
-# 🔹 FI 목표액 (25배 룰)
+    # (해외주식 공제 예시)
+    capital_gains_exemption = 2_500_000
+
+    # ----------------------------------------------------
+    # 6) Update st.query_params via from_dict in one go
+    # ----------------------------------------------------
+    # All values must be strings or lists of strings for repeated keys.
+    # Here, we have single values only.
+    updated_params = {
+        "current_age": str(current_age),
+        "death_age": str(death_age),
+        "current_savings": str(current_savings),
+        "annual_income_input": str(annual_income_input),
+        "income_end_age": str(income_end_age),
+        "other_income_input": str(other_income_input),
+        "other_income_end_age": str(other_income_end_age),
+        "annual_expenses_input": str(annual_expenses_input),
+        "expected_return": str(slider_val_return),
+        "inflation_rate": str(slider_val_inflation),
+        "withdrawal_rate": str(withdrawal_slider_val),
+        "capital_gains_tax_rate": str(slider_val_cap_gains_tax),
+    }
+    st.query_params.from_dict(updated_params)
+
+    # 현재 설정된 파라미터를 공유할 수 있는 링크 제공
+    st.write("---")
+    st.write(
+        "**이 링크를 공유하세요** 입력값을 다시 불러오거나 다른 사람에게 보낼 수 있습니다:"
+    )
+    params_dict = st.query_params.to_dict()
+    query_string = urlencode(params_dict, doseq=True)
+    share_link = "?" + query_string
+
+    if st.button("공유 링크 복사"):
+        copy_script = f"""
+        <script>
+        navigator.clipboard.writeText('{share_link}');
+        </script>
+        """
+        st.markdown(copy_script, unsafe_allow_html=True)
+        st.success("링크가 클립보드에 복사되었습니다!")
+
+
+############################################
+# 7) 시뮬레이션 로직 (unchanged)
+############################################
 financial_independence_target = annual_expenses_input * 25
-
-############################################
-# 3) 시뮬레이션 로직
-############################################
 years = np.arange(current_age, death_age + 1)
 
-# 결과 기록용 리스트
 portfolio_values = []
 withdrawals = []
 taxes_paid = []
@@ -198,21 +249,16 @@ income_taxes = []
 net_incomes = []
 investment_growths = []
 
-# 초기 값
 annual_income = annual_income_input
 other_income = other_income_input
 annual_expenses = annual_expenses_input
 
-# 현재 포트폴리오와 원금(cost basis)
 portfolio = current_savings
-cost_basis = current_savings  # 처음에는 '저축액 전부'가 원금
+cost_basis = current_savings
 
 depletion_age = None
 fi_age = None
 
-# -----------------------------------
-# 메인 시뮬레이션 반복 (나이= current_age ~ death_age)
-# -----------------------------------
 for idx, age in enumerate(years):
     # 매년 인플레이션 반영 (첫 해 제외)
     if idx > 0:
@@ -225,85 +271,59 @@ for idx, age in enumerate(years):
     extra_income = other_income if age < other_income_end_age else 0
     total_income = salary_income + extra_income
 
-    # 종합소득세 (연봉+기타소득 합산)
+    # 종합소득세 (연봉+기타수입 합산)
     income_tax = calculate_income_tax(total_income) if total_income > 0 else 0
     net_income = total_income - income_tax
 
-    # (A) 은퇴 전(연봉이 존재) vs (B) 은퇴 후(연봉 종료) 로직 분기
     if age < income_end_age:
-        # --------------------------------------
-        # (A) 은퇴 전: 아직 연봉이 있을 때
-        # --------------------------------------
-        # 1) 포트폴리오(미실현) 성장
+        # (A) 은퇴 전
         investment_growth = round(portfolio * expected_return)
         portfolio += investment_growth
 
-        # 2) 생활비 지출(인플레이션 반영)
         cash_flow = net_income - annual_expenses
         if cash_flow >= 0:
-            # 남은 돈(=저축액)은 새로 투자 -> cost_basis 증가
             cost_basis += cash_flow
             portfolio += cash_flow
         else:
-            # 부족분은 포트폴리오에서 사용 (매도세는 단순화하여 생략)
             portfolio += cash_flow
-            # 실제로는 cost_basis도 줄어들어야 맞지만, 여기서는 단순화
-            # 은퇴 전에는 "미실현" 가정 -> 양도소득세 X
 
-        # 은퇴 전엔 인출(=매도) 0, 양도소득세도 0
         annual_withdrawal = 0
         capital_gains_tax_amount = 0
 
-        # 포트폴리오가 0 미만이면 고갈
         if portfolio < 0 and depletion_age is None:
             depletion_age = age
             portfolio = 0
-
     else:
-        # --------------------------------------
-        # (B) 은퇴 후: 연봉이 끊긴 이후
-        # --------------------------------------
-        # 1) 먼저 포트폴리오가 미실현 상태로 성장
+        # (B) 은퇴 후
         investment_growth = round(portfolio * expected_return)
         portfolio += investment_growth
 
-        # 2) 설정한 인출률(%)만큼 실제 매도
         sell_amount = round(portfolio * withdrawal_rate)
-
-        # 만약 포트폴리오가 부족하면 -> 고갈
         if sell_amount > portfolio:
             sell_amount = portfolio
             portfolio = 0
         else:
             portfolio -= sell_amount
 
-        # 3) 매도액(sell_amount) 중 원금 vs. 이익 비중 계산
-        portfolio_before_sell = portfolio + sell_amount  # 매도 전 잔액
+        portfolio_before_sell = portfolio + sell_amount
         total_unrealized_gains = portfolio_before_sell - cost_basis
 
         if total_unrealized_gains <= 0:
-            # 전체가 원금이므로 이익 없음 -> 양도소득세 0
             capital_gains = 0
             capital_gains_tax_amount = 0
-
-            # cost_basis에서 매도액만큼 차감
             cost_basis -= sell_amount
             if cost_basis < 0:
                 cost_basis = 0
         else:
-            # 매도액 중 이익이 차지하는 비율
             sell_ratio = sell_amount / portfolio_before_sell
             capital_gains = total_unrealized_gains * sell_ratio
 
-            # 양도소득세 계산 (공제 후 과세)
             taxable_gains = max(0, capital_gains - capital_gains_exemption)
             capital_gains_tax_amount = round(taxable_gains * capital_gains_tax_rate)
 
-            # 매도액 중 원금 부분
             cost_basis_sold = sell_amount - capital_gains
             if cost_basis_sold < 0:
                 cost_basis_sold = 0
-
             cost_basis -= cost_basis_sold
             if cost_basis < 0:
                 cost_basis = 0
@@ -314,11 +334,9 @@ for idx, age in enumerate(years):
             depletion_age = age
             portfolio = 0
 
-    # FI 달성 여부 체크 (포트폴리오 >= 25 × 지출)
     if fi_age is None and portfolio >= financial_independence_target:
         fi_age = age
 
-    # 결과 기록
     portfolio_values.append(portfolio)
     withdrawals.append(annual_withdrawal)
     taxes_paid.append(capital_gains_tax_amount)
@@ -329,9 +347,6 @@ for idx, age in enumerate(years):
     net_incomes.append(net_income)
     investment_growths.append(investment_growth)
 
-# -----------------------------------
-# 최종 결과 DataFrame 정리
-# -----------------------------------
 df = pd.DataFrame(
     {
         "나이": years,
@@ -348,27 +363,23 @@ df = pd.DataFrame(
 )
 
 ###################################
-# 추가: 나이 자산 표시
+# 8) 결과 요약
 ###################################
-# 시점의 자산
 retire_portfolio = df.loc[df["나이"] == income_end_age, "포트폴리오 잔액"].values[0]
 other_portfolio = df.loc[df["나이"] == other_income_end_age, "포트폴리오 잔액"].values[
     0
 ]
 death_portfolio = df.loc[df["나이"] == death_age, "포트폴리오 잔액"].values[0]
 
-# 데이터 구성
 data = [
     [
         "FIRE 목표액",
         f"{annual_expenses_input:,.0f} KRW × 25",
-        f"**{financial_independence_target:,.0f} KRW**",
+        f"**{(annual_expenses_input * 25):,.0f} KRW**",
     ],
     ["은퇴 나이", f"{income_end_age}세", f"{retire_portfolio:,.0f} KRW"],
     ["사망(기대 수명)", f"{death_age}세", f"{death_portfolio:,.0f} KRW"],
 ]
-
-# 기타 수입 종료 나이 추가 (other_portfolio가 0이 아닐 때만)
 if other_portfolio > 0:
     data.insert(
         2,
@@ -379,13 +390,9 @@ if other_portfolio > 0:
         ],
     )
 
-# DataFrame 생성
 df2 = pd.DataFrame(data, columns=["항목", "조건", "금액"]).set_index("항목")
-
-# Streamlit 테이블 표시 (인덱스 없이)
 st.table(df2.style.hide(axis="index"))
 
-# 추가 설명 마크다운
 st.markdown(
     f"""
 - 은퇴 전에는 연봉+기타소득(세후)으로 생활비를 지출하고 남는 돈을 투자합니다.
@@ -396,23 +403,15 @@ st.markdown(
 """
 )
 
-# -----------------------------------
-# 결과 표시
-# -----------------------------------
-# FI 달성 여부
 if fi_age is not None:
     st.success(f"🎉 축하합니다! {fi_age}세에 FIRE를 달성했습니다.")
 else:
     st.info("아직 FIRE 목표액(지출 25배)에 도달하지 못했습니다.")
 
-# 포트폴리오 고갈 여부
 if depletion_age is not None:
     st.error(f"⚠️ 포트폴리오가 {depletion_age}세에 고갈되었습니다.")
 
-
-# Altair 그래프
 st.subheader("📊 포트폴리오 변동 그래프")
-
 chart_data = pd.DataFrame({"나이": years, "포트폴리오 잔액": portfolio_values})
 chart = (
     alt.Chart(chart_data)
@@ -420,18 +419,13 @@ chart = (
     .encode(
         x=alt.X("나이:Q", title="나이"),
         y=alt.Y("포트폴리오 잔액:Q", title="포트폴리오 잔액 (KRW)"),
-        tooltip=[
-            alt.Tooltip("나이:Q"),
-            alt.Tooltip("포트폴리오 잔액:Q", format=","),
-        ],
+        tooltip=[alt.Tooltip("나이:Q"), alt.Tooltip("포트폴리오 잔액:Q", format=",")],
     )
     .properties(width=700, height=400)
 )
-
 st.altair_chart(chart, use_container_width=True)
 
 st.subheader("📋 시뮬레이션 결과 데이터")
-
 """
 아래 테이블에서 매년(나이별) 포트폴리오 변화, 소득, 세금, 인출 내역 등을 확인할 수 있습니다.
 계산 과정에서 정수 반올림이 이뤄집니다.
