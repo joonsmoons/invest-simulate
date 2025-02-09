@@ -92,6 +92,7 @@ with st.sidebar:
         max_value=90,
         value=current_age_default,
         step=1,
+        help="당신의 현재 나이를 입력하세요. (만 나이)",
     )
     death_age = st.number_input(
         "기대 수명(사망 나이)",
@@ -99,12 +100,14 @@ with st.sidebar:
         max_value=110,
         value=death_age_default,
         step=1,
+        help="예상하는 사망 나이를 입력하세요. (기대 수명)",
     )
     current_savings = st.number_input(
         "현재 저축액 (KRW)",
         min_value=0,
         value=current_savings_default,
         step=10_000_000,
+        help="현재 투자금 등 총 저축액을 입력하세요.",
     )
 
     # 연봉 & 종료 나이
@@ -115,6 +118,7 @@ with st.sidebar:
             min_value=0,
             value=annual_income_default,
             step=1_000_000,
+            help="세전 연봉(연간 총 수입)을 입력하세요.",
         )
     with col2:
         income_end_age = st.number_input(
@@ -123,6 +127,7 @@ with st.sidebar:
             max_value=death_age,
             value=income_end_age_default,
             step=1,
+            help="몇 살까지 연봉 수익이 발생할 것인지 입력하세요.",
         )
 
     # 기타 수입 & 종료 나이
@@ -133,6 +138,7 @@ with st.sidebar:
             min_value=0,
             value=other_income_default,
             step=1_000_000,
+            help="연봉 이외에 추가로 발생하는 연간 기타 수입을 입력하세요.",
         )
     with col4:
         other_income_end_age = st.number_input(
@@ -141,6 +147,7 @@ with st.sidebar:
             max_value=death_age,
             value=other_income_end_age_default,
             step=1,
+            help="기타 수입이 언제까지 발생할 것인지 입력하세요.",
         )
 
     annual_expenses_input = st.number_input(
@@ -148,16 +155,18 @@ with st.sidebar:
         min_value=0,
         value=annual_expenses_default,
         step=1_000_000,
+        help="1년 동안 예상되는 총 지출 금액을 입력하세요.",
     )
 
     # 투자 & 물가상승률
     st.markdown("#### 투자 및 물가상승률")
     slider_val_return = st.slider(
-        "기대 연간 수익률 (%)",
+        "연간 기대 수익률 (%)",
         0.0,
         10.0,
         expected_return_slider_def,
         step=0.1,
+        help="투자로 기대하는 연간 평균 수익률(%)을 입력하세요.",
     )
     expected_return = slider_val_return / 100.0
 
@@ -167,15 +176,17 @@ with st.sidebar:
         10.0,
         inflation_rate_slider_def,
         step=0.1,
+        help="연간 물가상승률(%)을 입력하세요.",
     )
     inflation_rate = slider_val_inflation / 100.0
 
     withdrawal_slider_val = st.slider(
         "은퇴 후 인출률 (%)",
-        1.0,
-        10.0,
+        0.1,
+        15.0,
         withdrawal_rate_slider_def,
         step=0.1,
+        help="은퇴 후 매년 인출할 금액의 비율(%)을 설정하세요.",
     )
     withdrawal_rate = withdrawal_slider_val / 100.0
 
@@ -184,13 +195,12 @@ with st.sidebar:
     slider_val_cap_gains_tax = st.slider(
         "양도소득세율 (%)",
         0.0,
-        30.0,
+        50.0,
         cap_gains_tax_slider_def,
         step=0.1,
+        help="투자 수익에 부과되는 양도소득세율(%)을 설정하세요.",
     )
     capital_gains_tax_rate = slider_val_cap_gains_tax / 100.0
-
-    # (해외주식 공제 예시)
     capital_gains_exemption = 2_500_000
 
     # ----------------------------------------------------
@@ -217,20 +227,13 @@ with st.sidebar:
     # 현재 설정된 파라미터를 공유할 수 있는 링크 제공
     st.write("---")
     st.write(
-        "**이 링크를 공유하세요** 입력값을 다시 불러오거나 다른 사람에게 보낼 수 있습니다:"
-    )
-    params_dict = st.query_params.to_dict()
-    query_string = urlencode(params_dict, doseq=True)
-    share_link = "?" + query_string
-
-    if st.button("공유 링크 복사"):
-        copy_script = f"""
-        <script>
-        navigator.clipboard.writeText('{share_link}');
-        </script>
         """
-        st.markdown(copy_script, unsafe_allow_html=True)
-        st.success("링크가 클립보드에 복사되었습니다!")
+        **해당 링크를 그대로 복사해서** 다시 불러오거나
+        다른 사람에게 보낼 수 있습니다.
+        자동 복사 기능은 지금은 조금 어려우니,
+        링크를 직접 복사해 주세요.
+        """
+    )
 
 
 ############################################
@@ -351,14 +354,14 @@ df = pd.DataFrame(
     {
         "나이": years,
         "포트폴리오 잔액": portfolio_values,
-        "연봉": income_values,
+        "연봉(세전)": income_values,
         "기타 수입": other_income_values,
-        "소득세": income_taxes,
+        "은퇴 전 세금(종합소득세)": income_taxes,
         "세후 소득": net_incomes,
-        "연간 지출(인플레이션 반영)": expenses_history,
-        "투자수익(연간)": investment_growths,
-        "연간 인출액(포트폴리오 %)": withdrawals,
-        "은퇴 후 납부세금(양도세)": taxes_paid,
+        "인플레이션 반영 지출": expenses_history,
+        "투자수익(미실현)": investment_growths,
+        f"연간 인출(포트폴리오 {withdrawal_rate*100:.1f}%)": withdrawals,
+        "은퇴 후 세금(양도세)": taxes_paid,
     }
 )
 
