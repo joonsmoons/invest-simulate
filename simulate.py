@@ -28,13 +28,8 @@ def calculate_income_tax(income):
 ######################################
 # 2) Helper functions for query params
 ######################################
-# st.query_params returns an object that behaves like a dictionary
-# but also supports attribute notation (e.g. st.query_params.my_key).
-
-
 def safe_get_int_param(key, default):
     try:
-        # st.query_params[key] returns a string if it exists
         return int(st.query_params.get(key, default))
     except (ValueError, TypeError):
         return default
@@ -65,7 +60,6 @@ st.info(
 ############################
 # 4) Load defaults from URL
 ############################
-# Read from st.query_params (which are strings).
 current_age_default = safe_get_int_param("current_age", 30)
 death_age_default = safe_get_int_param("death_age", 90)
 current_savings_default = safe_get_int_param("current_savings", 500_000_000)
@@ -77,7 +71,6 @@ annual_expenses_default = safe_get_int_param("annual_expenses_input", 70_000_000
 
 expected_return_slider_def = safe_get_float_param("expected_return", 6.0)
 inflation_rate_slider_def = safe_get_float_param("inflation_rate", 2.0)
-withdrawal_rate_slider_def = safe_get_float_param("withdrawal_rate", 4.0)
 cap_gains_tax_slider_def = safe_get_float_param("capital_gains_tax_rate", 22.0)
 
 ###############################
@@ -142,7 +135,7 @@ with st.sidebar:
         )
     with col4:
         other_income_end_age = st.number_input(
-            "종료 나이",
+            "기타 수입 종료 나이",
             min_value=current_age,
             max_value=death_age,
             value=other_income_end_age_default,
@@ -151,11 +144,11 @@ with st.sidebar:
         )
 
     annual_expenses_input = st.number_input(
-        "연간 지출 (KRW)",
+        "은퇴 전 연간 지출 (KRW)",
         min_value=0,
         value=annual_expenses_default,
         step=1_000_000,
-        help="1년 동안 예상되는 총 지출 금액을 입력하세요.",
+        help="은퇴 전 1년 동안 예상되는 총 지출 금액 (매년 인플레이션 적용)",
     )
 
     # 투자 & 물가상승률
@@ -176,19 +169,9 @@ with st.sidebar:
         10.0,
         inflation_rate_slider_def,
         step=0.1,
-        help="연간 물가상승률(%)을 입력하세요.",
+        help="연간 물가상승률(%)을 입력하세요. (은퇴 전 지출·소득에만 적용)",
     )
     inflation_rate = slider_val_inflation / 100.0
-
-    withdrawal_slider_val = st.slider(
-        "은퇴 후 인출률 (%)",
-        0.1,
-        15.0,
-        withdrawal_rate_slider_def,
-        step=0.1,
-        help="은퇴 후 매년 인출할 금액의 비율(%)을 설정하세요.",
-    )
-    withdrawal_rate = withdrawal_slider_val / 100.0
 
     # 세금 설정 (양도소득세)
     st.markdown("#### 양도소득세(자본이득) 설정")
@@ -198,16 +181,11 @@ with st.sidebar:
         50.0,
         cap_gains_tax_slider_def,
         step=0.1,
-        help="투자 수익에 부과되는 양도소득세율(%)을 설정하세요.",
+        help="투자 수익에 부과되는 양도소득세율(%)을 설정하세요. (해외주식 가정)",
     )
     capital_gains_tax_rate = slider_val_cap_gains_tax / 100.0
-    capital_gains_exemption = 2_500_000
 
-    # ----------------------------------------------------
-    # 6) Update st.query_params via from_dict in one go
-    # ----------------------------------------------------
-    # All values must be strings or lists of strings for repeated keys.
-    # Here, we have single values only.
+    # URL 파라미터 갱신
     updated_params = {
         "current_age": str(current_age),
         "death_age": str(death_age),
@@ -219,29 +197,30 @@ with st.sidebar:
         "annual_expenses_input": str(annual_expenses_input),
         "expected_return": str(slider_val_return),
         "inflation_rate": str(slider_val_inflation),
-        "withdrawal_rate": str(withdrawal_slider_val),
         "capital_gains_tax_rate": str(slider_val_cap_gains_tax),
     }
     st.query_params.from_dict(updated_params)
 
-    # 현재 설정된 파라미터를 공유할 수 있는 링크 제공
     st.write("---")
     st.write(
         """
-        **해당 링크를 그대로 복사해서** 다시 불러오거나
-        다른 사람에게 보낼 수 있습니다.
-        자동 복사 기능은 지금은 조금 어려우니,
-        링크를 직접 복사해 주세요.
+        **이 링크를 복사**하여 다시 불러오거나 공유할 수 있습니다.
         """
     )
 
 
 ############################################
-# 7) 시뮬레이션 로직 (unchanged)
+# 7) 시뮬레이션 로직
 ############################################
-financial_independence_target = annual_expenses_input * 25
-years = np.arange(current_age, death_age + 1)
+# - 은퇴 전(age < income_end_age): 인플레이션 반영 지출 사용
+# - 은퇴 후(age >= income_end_age): 포트폴리오의 4%만 인출하여 전부 지출 (인플레이션 X)
+############################################
 
+years = np.arange(current_age, death_age + 1)
+withdrawal_rate = 0.04  # 은퇴 후 인출률(고정 4%)
+financial_independence_target = annual_expenses_input * 25
+
+# 추적용 리스트
 portfolio_values = []
 withdrawals = []
 taxes_paid = []
@@ -252,104 +231,123 @@ income_taxes = []
 net_incomes = []
 investment_growths = []
 
-annual_income = annual_income_input
-other_income = other_income_input
-annual_expenses = annual_expenses_input
+# 초기값 세팅
+annual_income = annual_income_input  # 은퇴 전 기간 동안 매년 인플레이션 적용
+other_income = (
+    other_income_input  # 은퇴 전(또는 기타수입 종료 나이 전) 동안 인플레이션 적용
+)
+annual_expenses = annual_expenses_input  # 은퇴 전 지출(매년 인플레이션 반영)
 
 portfolio = current_savings
 cost_basis = current_savings
 
+capital_gains_exemption = 2_500_000
 depletion_age = None
 fi_age = None
 
 for idx, age in enumerate(years):
-    # 매년 인플레이션 반영 (첫 해 제외)
-    if idx > 0:
-        annual_income = round(annual_income * (1 + inflation_rate))
-        other_income = round(other_income * (1 + inflation_rate))
-        annual_expenses = round(annual_expenses * (1 + inflation_rate))
 
-    # 이번 해의 급여 + 기타소득
+    # A) 매년의 '소득/지출'에 인플레이션을 반영하는 시점 (은퇴 전까지만)
+    if idx > 0:
+        # (1) 연봉/기타수입
+        if age < income_end_age:  # 은퇴 전까지만 연봉/기타소득에 인플레 반영
+            annual_income = round(annual_income * (1 + inflation_rate))
+        if age < other_income_end_age:  # 기타수입도 종료 전까지만 인플레 반영
+            other_income = round(other_income * (1 + inflation_rate))
+        # (2) 은퇴 전 지출
+        if age < income_end_age:
+            annual_expenses = round(annual_expenses * (1 + inflation_rate))
+        # 은퇴 이후에는 annual_expenses는 더이상 사용하지 않음 (4% 인출로 대체)
+
+    # B) 해당 연도에 실제 발생하는 소득(연봉+기타수입)
     salary_income = annual_income if age < income_end_age else 0
     extra_income = other_income if age < other_income_end_age else 0
     total_income = salary_income + extra_income
 
-    # 종합소득세 (연봉+기타수입 합산)
+    # C) 종합소득세 계산
     income_tax = calculate_income_tax(total_income) if total_income > 0 else 0
     net_income = total_income - income_tax
 
-    if age < income_end_age:
-        # (A) 은퇴 전
-        investment_growth = round(portfolio * expected_return)
-        portfolio += investment_growth
+    # D) 투자수익 계산
+    investment_growth = round(portfolio * expected_return)
+    portfolio += investment_growth
 
+    if age < income_end_age:
+        # (1) 은퇴 전
+        #     지출: annual_expenses (매년 인플레 반영)
+        #     남거나 부족한 금액을 포트폴리오에 반영
         cash_flow = net_income - annual_expenses
         if cash_flow >= 0:
+            # 남는 돈을 추가 투자 -> 원금(cost_basis)도 증가
             cost_basis += cash_flow
             portfolio += cash_flow
         else:
-            portfolio += cash_flow
+            # 지출이 더 많으면 모자란 만큼 포트폴리오에서 꺼내쓴다
+            portfolio += cash_flow  # cash_flow는 음수
+            # 포트폴리오에서 꺼낸 부분 중 원금 vs 이익 구분은 단순화
 
         annual_withdrawal = 0
         capital_gains_tax_amount = 0
 
-        if portfolio < 0 and depletion_age is None:
-            depletion_age = age
-            portfolio = 0
     else:
-        # (B) 은퇴 후
-        investment_growth = round(portfolio * expected_return)
-        portfolio += investment_growth
+        # (2) 은퇴 후
+        #     은퇴 후 생활비 = "포트폴리오의 4%" (매년 다시 계산, 인플레 반영 X)
+        annual_withdrawal = round(portfolio * withdrawal_rate)
 
-        sell_amount = round(portfolio * withdrawal_rate)
-        if sell_amount > portfolio:
-            sell_amount = portfolio
+        if annual_withdrawal > portfolio:
+            # 포트폴리오가 모자라면 있는 만큼만 쓰고 0원
+            annual_withdrawal = portfolio
             portfolio = 0
         else:
-            portfolio -= sell_amount
+            portfolio -= annual_withdrawal
 
-        portfolio_before_sell = portfolio + sell_amount
+        # (2-a) 양도소득세 계산
+        portfolio_before_sell = portfolio + annual_withdrawal
         total_unrealized_gains = portfolio_before_sell - cost_basis
 
         if total_unrealized_gains <= 0:
             capital_gains = 0
             capital_gains_tax_amount = 0
-            cost_basis -= sell_amount
+            cost_basis -= annual_withdrawal
             if cost_basis < 0:
                 cost_basis = 0
         else:
-            sell_ratio = sell_amount / portfolio_before_sell
+            sell_ratio = annual_withdrawal / portfolio_before_sell
             capital_gains = total_unrealized_gains * sell_ratio
 
+            # 양도소득 기본공제
             taxable_gains = max(0, capital_gains - capital_gains_exemption)
             capital_gains_tax_amount = round(taxable_gains * capital_gains_tax_rate)
 
-            cost_basis_sold = sell_amount - capital_gains
+            cost_basis_sold = annual_withdrawal - capital_gains
             if cost_basis_sold < 0:
                 cost_basis_sold = 0
             cost_basis -= cost_basis_sold
             if cost_basis < 0:
                 cost_basis = 0
 
-        annual_withdrawal = sell_amount
+    # E) 포트폴리오 고갈 여부
+    if portfolio < 0 and depletion_age is None:
+        depletion_age = age
+        portfolio = 0
 
-        if portfolio <= 0 and depletion_age is None:
-            depletion_age = age
-            portfolio = 0
-
+    # F) FIRE (재정적 독립) 달성 여부
+    #    - 일반적으로 '연간 지출의 25배'를 넘으면 FIRE 달성으로 볼 수 있음
     if fi_age is None and portfolio >= financial_independence_target:
         fi_age = age
 
+    # 로그 데이터 기록
     portfolio_values.append(portfolio)
     withdrawals.append(annual_withdrawal)
     taxes_paid.append(capital_gains_tax_amount)
-    expenses_history.append(annual_expenses)
+    expenses_history.append(annual_expenses if age < income_end_age else 0)
     income_values.append(salary_income)
     other_income_values.append(extra_income)
     income_taxes.append(income_tax)
     net_incomes.append(net_income)
     investment_growths.append(investment_growth)
 
+# 최종 DataFrame 구성
 df = pd.DataFrame(
     {
         "나이": years,
@@ -358,10 +356,10 @@ df = pd.DataFrame(
         "기타 수입": other_income_values,
         "은퇴 전 세금(종합소득세)": income_taxes,
         "세후 소득": net_incomes,
-        "인플레이션 반영 지출": expenses_history,
-        "투자수익(미실현)": investment_growths,
-        f"연간 인출(포트폴리오 {withdrawal_rate*100:.1f}%)": withdrawals,
+        "은퇴 전 지출(인플레이션 적용)": expenses_history,
+        "은퇴 후 인출금(=포트폴리오 4%)": withdrawals,
         "은퇴 후 세금(양도세)": taxes_paid,
+        "연간 투자수익(미실현)": investment_growths,
     }
 )
 
@@ -376,9 +374,9 @@ death_portfolio = df.loc[df["나이"] == death_age, "포트폴리오 잔액"].va
 
 data = [
     [
-        "FIRE 목표액",
-        f"{annual_expenses_input:,.0f} KRW × 25",
-        f"**{(annual_expenses_input * 25):,.0f} KRW**",
+        "FIRE 목표액 (연지출 25배)",
+        f"{annual_expenses_default:,.0f} KRW × 25",
+        f"**{(annual_expenses_default * 25):,.0f} KRW**",
     ],
     ["은퇴 나이", f"{income_end_age}세", f"{retire_portfolio:,.0f} KRW"],
     ["사망(기대 수명)", f"{death_age}세", f"{death_portfolio:,.0f} KRW"],
@@ -398,18 +396,18 @@ st.table(df2.style.hide(axis="index"))
 
 st.markdown(
     f"""
-- 은퇴 전에는 연봉+기타소득(세후)으로 생활비를 지출하고 남는 돈을 투자합니다.
-- 은퇴 후에는 매년 포트폴리오 잔액의 {withdrawal_rate*100:.1f}%를 실제 매도(인출)합니다.
-- 인출 분 중 원금 대비 이익 분을 계산해, 해외주식 양도소득세율({capital_gains_tax_rate*100:.1f}%)을 적용합니다.
-- 연봉, 기타 수입, 연간 지출은 모두 매년 인플레이션({inflation_rate*100:.1f}%)을 적용해 상승한다고 가정했습니다.
-- 소득(연봉+기타 수입)은 **종합소득세 함수**를 통해 세후 소득(Net Income)을 계산합니다.
+- **은퇴 전**(나이 < {income_end_age}세)에는 매년 지출(인플레이션 적용)을 하고, 남는 소득을 저축합니다.
+- **은퇴 후**(나이 ≥ {income_end_age}세)에는 더 이상 인플레이션 반영 지출을 사용하지 않고, 포트폴리오 잔액의 {withdrawal_rate*100:.0f}%만 매년 인출하여 생활비로 사용합니다.
+- 연봉·기타 수입·지출은 은퇴 전 기간 동안 매년 인플레이션({inflation_rate*100:.1f}%)이 적용됩니다.
+- 인출액 중 이익(원금 대비)에는 해외주식 양도소득세율({capital_gains_tax_rate*100:.1f}%)을 적용했습니다.
+- 소득(연봉+기타 수입)은 **종합소득세 함수를 이용**해 세후 소득으로 반영됩니다.
 """
 )
 
 if fi_age is not None:
-    st.success(f"🎉 축하합니다! {fi_age}세에 FIRE를 달성했습니다.")
+    st.success(f"🎉 축하합니다! {fi_age}세에 FIRE(재정적 독립)를 달성했습니다.")
 else:
-    st.info("아직 FIRE 목표액(지출 25배)에 도달하지 못했습니다.")
+    st.info("아직 FIRE 목표액(연지출 25배)에 도달하지 못했습니다.")
 
 if depletion_age is not None:
     st.error(f"⚠️ 포트폴리오가 {depletion_age}세에 고갈되었습니다.")
@@ -429,10 +427,6 @@ chart = (
 st.altair_chart(chart, use_container_width=True)
 
 st.subheader("📋 시뮬레이션 결과 데이터")
-"""
-아래 테이블에서 매년(나이별) 포트폴리오 변화, 소득, 세금, 인출 내역 등을 확인할 수 있습니다.
-계산 과정에서 정수 반올림이 이뤄집니다.
-"""
 df_display = df.copy().set_index("나이")
 for col in df_display.columns[1:]:
     df_display[col] = df_display[col].apply(lambda x: f"{int(x):,} KRW")
@@ -445,6 +439,7 @@ st.markdown(
 - 실제 투자상품(해외주식, 국내주식, 부동산 등)에 따라 세율, 공제, 과세 방법이 달라질 수 있습니다.
 - 본 시뮬레이터는 여러 가정을 단순화하여 작성된 예시 코드이므로,
   개인별 정확한 재무 설계를 위해서는 전문가와의 상담이 필요합니다.
-- 은퇴 이후에도 의료비나 기타 지출이 증가할 수 있으며, 세부 시나리오에 따라 다르게 모델링해야 합니다.
+- 의료비, 간병비 등 예외적 지출이 발생할 수 있으므로,
+  은퇴 후 실제 생활비가 더 필요할 수 있다는 점을 유의하세요.
 """
 )
